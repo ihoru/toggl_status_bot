@@ -1,0 +1,33 @@
+{
+  "name": "toggl_status_bot",
+  "version": "1.0.0",
+  "description": "Toggl Track timer status checker bot for Telegram",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "nodemon src/index.js",
+    "start:prod": "node src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ihoru/toggl_status_bot.git"
+  },
+  "keywords": [
+    "telegram-bot",
+    "node",
+    "toggl",
+    "toggl-track"
+  ],
+  "author": "Igor Polyakov",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ihoru/toggl_status_bot/issues"
+  },
+  "homepage": "https://github.com/ihoru/toggl_status_bot#readme",
+  "dependencies": {
+    "axios": "^1.4.0",
+    "dotenv": "^16.0.3",
+    "telegraf": "^4.12.2",
+    "telegraf-session-local": "^2.1.1"
+  }
+}
