@@ -101,7 +101,7 @@ async function checkHasToken(ctx, next) {
     if (hasToken(ctx)) {
         return next();
     }
-    const msg = "There's not stored token. Send it to the chat first";
+    const msg = "There's no stored token. Send it to the chat first";
     if (ctx.update.callback_query) {
         ctx.answerCbQuery(msg, {show_alert: true});
     } else {
