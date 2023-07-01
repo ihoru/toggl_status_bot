@@ -115,9 +115,11 @@ async function myMiddleware(ctx, next) {
     if (ctx.chat.type === "private") {
         initSession(ctx.session);
         ctx.sessionId = localSession.getSessionKey(ctx);
-        console.debug("chat:", ctx.chat);
-        console.debug("update:", ctx.update);
-        console.debug("session:", ctx.session);
+        if (settings.debug) {
+            console.debug("chat:", ctx.chat);
+            console.debug("update:", ctx.update);
+            console.debug("session:", ctx.session);
+        }
         await next();
     } else {
         // noinspection ES6MissingAwait
