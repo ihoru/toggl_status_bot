@@ -110,7 +110,13 @@ async function checkHasToken(ctx, next) {
 }
 
 async function myMiddleware(ctx, next) {
-    const title = `Processing update ${ctx.update.update_id}`;
+    const update = ctx.update;
+    const message = update.message;
+    const callbackQuery = update.callback_query;
+    const action = (message?.text || callbackQuery?.data || "").slice(0, 20);
+    const fromId = (message || callbackQuery)?.from.id || "-";
+    const fromUsername = (message || callbackQuery)?.from.username || "-";
+    const title = `Processing update [${ctx.update.update_id}] from [${fromId} @${fromUsername}] with text "${action}"`;
     console.time(title);
     if (ctx.chat.type === "private") {
         initSession(ctx.session);
