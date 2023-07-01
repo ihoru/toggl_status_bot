@@ -138,6 +138,7 @@ async function commandCheckHandler(ctx) {
     const tokenObj = ctx.session.tokens[0];
     const currentTimer = await TogglTrackAPI.currentTimer(tokenObj.token);
     if (!currentTimer) {
+        delete tokenObj.checking;
         ctx.reply("Timer is not started");
         return;
     }
@@ -183,7 +184,7 @@ async function commandStopHandler(ctx) {
         ctx.reply("Continuous checking is not active!");
         return;
     }
-    tokenObj.checking = false;
+    delete tokenObj.checking;
     ctx.reply("Continuous checking was stopped");
 }
 
@@ -290,7 +291,7 @@ async function actionStopCheckingHandler(ctx) {
         );
         return;
     }
-    tokenObj.checking = false;
+    delete tokenObj.checking;
     ctx.answerCbQuery("Continuous checking was stopped");
 }
 
