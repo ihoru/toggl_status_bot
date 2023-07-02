@@ -1,5 +1,7 @@
 // noinspection SqlNoDataSourceInspection
 
+require("log-timestamp");
+
 const dotenv = require("dotenv");
 
 const {Telegraf, Markup} = require("telegraf");
@@ -25,7 +27,9 @@ if (settings.checkInterval < 10) {
     throw new Error("env.CHECK_INTERVAL should be greater than 10");
 }
 
-console.debug("Starting with settings:", settings);
+if (settings.debug) {
+    console.debug("Starting with settings:", settings);
+}
 
 const timeouts = [];
 const localSession = new LocalSession({
