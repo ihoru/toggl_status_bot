@@ -267,7 +267,6 @@ async function hearsTokenHandler(ctx) {
 }
 
 async function actionCheckHandler(ctx) {
-    ctx.answerCbQuery("Checking...");
     await ctx.editMessageReplyMarkup();
     await commandCheckHandler(ctx);
 }
