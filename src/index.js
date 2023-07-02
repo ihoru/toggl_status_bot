@@ -74,7 +74,7 @@ function humanDuration(seconds) {
     seconds -= minutes * 60;
     minutes = minutes ? `${minutes}m ` : "";
     seconds = seconds ? `${seconds}s ` : "";
-    return `${hours}${minutes}${seconds}ago`;
+    return `${hours}${minutes}${seconds}`;
 }
 
 
@@ -161,7 +161,7 @@ async function setup(ctx, next) {
 function buildTimerMessage(tokenObj) {
     const now = Math.floor(Date.now() / 1000);
     const duration = humanDuration(now + tokenObj.lastDuration); // duration - negative unix timestamp
-    let msg = `Timer was started ${duration}\n`;
+    let msg = `Timer was started ${duration} ago\n`;
     if (tokenObj.checking) {
         msg += "Continuous checking is active";
     }
