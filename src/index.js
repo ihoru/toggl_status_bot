@@ -1,4 +1,4 @@
-// noinspection SqlNoDataSourceInspection, ES6MissingAwait
+// noinspection SqlNoDataSourceInspection
 
 const dotenv = require("dotenv");
 
@@ -18,9 +18,16 @@ const settings = {
     adminUsername: process.env.ADMIN_USERNAME, // for reporting problems
     databasePath: "data/sessions.json",
 };
-console.assert(settings.botToken, "env.BOT_TOKEN is not set");
-console.assert(settings.checkInterval >= 10, "env.CHECK_INTERVAL should be greater than 10");
+if (!settings.botToken) {
+    throw new Error("env.BOT_TOKEN is not set");
+}
+if (settings.checkInterval < 10) {
+    throw new Error("env.CHECK_INTERVAL should be greater than 10");
+}
 
+console.debug("Starting with settings:", settings);
+
+const timeouts = [];
 const localSession = new LocalSession({
     storage: LocalSession.storageFileAsync,
     database: settings.databasePath,
@@ -36,16 +43,15 @@ function dbGetTokenObj(db, sessionId, token) {
     }
 }
 
-function restoreTimerChecks(db) {
+async function restoreTimerChecks(db) {
     const data = db.get("sessions").value();
-    data.forEach((session) => {
-        session.data.tokens.forEach((tokenObj) => {
-            if (!tokenObj.checking) {
-                return;
+    for (const session of data) {
+        for (const tokenObj of session.data.tokens) {
+            if (tokenObj.checking) {
+                await checkTimerStatus(session.id, tokenObj.token);
             }
-            checkTimerStatus(session.id, tokenObj.token);
-        });
-    });
+        }
+    }
 }
 
 function initSession(session) {
@@ -67,34 +73,51 @@ function humanDuration(seconds) {
     return `${hours}${minutes}${seconds}ago`;
 }
 
+
+const checkAgainReplyMarkup = Markup.inlineKeyboard([
+    Markup.button.callback("Check again", "check"),
+]);
+const startCheckingReplyMarkup = Markup.inlineKeyboard([
+    Markup.button.callback("Start checking continuously", "start_checking"),
+]);
+const stopCheckingReplyMarkup = Markup.inlineKeyboard([
+    Markup.button.callback("Stop", "stop_checking"),
+]);
+
 function hasToken(ctx) {
     return ctx.session.tokens.length;
 }
 
-function checkTimerStatus(sessionId, token) {
+async function checkTimerStatus(sessionId, token) {
     const db = localSession.DB;
     const tokenObj = dbGetTokenObj(db, sessionId, token);
     if (!tokenObj?.checking) {
         return;
     }
-    const currentTimer = TogglTrackAPI.currentTimer(token);
+    const currentTimer = await TogglTrackAPI.currentTimer(token);
     if (currentTimer) {
         checkTimerStatusSetTimeout(sessionId, token);
         return;
     }
     delete tokenObj.checking;
-    db.write();
-    const reply_markup = Markup.inlineKeyboard([
-        Markup.button.callback("Check again", "check"),
-    ]);
+    await db.write();
     const chatId = sessionId.split(":")[0];
-    bot.telegram.sendMessage(chatId, "Timer was stopped!", reply_markup);
+    await bot.telegram.sendMessage(chatId, "Timer was stopped!", checkAgainReplyMarkup);
 }
 
 function checkTimerStatusSetTimeout(sessionId, token) {
-    setTimeout(() => {
-        checkTimerStatus(sessionId, token);
+    const timeout = setTimeout(async () => {
+        const index = timeouts.indexOf(timeout);
+        if (index !== -1) {
+            timeouts.splice(index, 1);
+        }
+        try {
+            await checkTimerStatus(sessionId, token);
+        } catch (e) {
+            console.error("checkTimerStatus", e);
+        }
     }, settings.checkInterval * 1000);
+    timeouts.push(timeout);
 }
 
 async function checkHasToken(ctx, next) {
@@ -103,17 +126,20 @@ async function checkHasToken(ctx, next) {
     }
     const msg = "There's no stored token. Send it to the chat first";
     if (ctx.update.callback_query) {
-        ctx.answerCbQuery(msg, {show_alert: true});
+        await ctx.answerCbQuery(msg, {show_alert: true});
     } else {
-        ctx.reply(msg);
+        await ctx.sendMessage(msg);
     }
 }
 
-async function myMiddleware(ctx, next) {
+async function setup(ctx, next) {
     const update = ctx.update;
     const message = update.message;
     const callbackQuery = update.callback_query;
-    const action = (message?.text || callbackQuery?.data || "").slice(0, 20);
+    let action = message ? `text:${message.text}` : null;
+    action ??= callbackQuery ? `action:${callbackQuery.data}` : null;
+    action ??= "<empty>";
+    action = action.slice(0, 30);
     const fromId = (message || callbackQuery)?.from.id || "-";
     const fromUsername = (message || callbackQuery)?.from.username || "-";
     const title = `Processing update [${ctx.update.update_id}] from [${fromId} @${fromUsername}] with text "${action}"`;
@@ -121,17 +147,21 @@ async function myMiddleware(ctx, next) {
     if (ctx.chat.type === "private") {
         initSession(ctx.session);
         ctx.sessionId = localSession.getSessionKey(ctx);
-        if (settings.debug) {
-            console.debug("chat:", ctx.chat);
-            console.debug("update:", ctx.update);
-            console.debug("session:", ctx.session);
-        }
         await next();
     } else {
-        // noinspection ES6MissingAwait
-        ctx.reply("Incorrect chat type");
+        await ctx.sendMessage("Incorrect chat type");
     }
     console.timeEnd(title);
+}
+
+function buildTimerMessage(tokenObj) {
+    const now = Math.floor(Date.now() / 1000);
+    const duration = humanDuration(now + tokenObj.lastDuration); // duration - negative unix timestamp
+    let msg = `Timer was started ${duration}\n`;
+    if (tokenObj.checking) {
+        msg += "Continuous checking is active";
+    }
+    return msg.trim();
 }
 
 async function commandCheckHandler(ctx) {
@@ -139,40 +169,25 @@ async function commandCheckHandler(ctx) {
     const currentTimer = await TogglTrackAPI.currentTimer(tokenObj.token);
     if (!currentTimer) {
         delete tokenObj.checking;
-        ctx.reply("Timer is not started");
+        await ctx.sendMessage("Timer is not started", checkAgainReplyMarkup);
         return;
     }
     tokenObj.lastDuration = currentTimer.duration;
-
-    const now = Math.floor(Date.now() / 1000);
-    const duration = humanDuration(now + currentTimer.duration); // duration - negative unix timestamp
-    let reply_markup;
-    let msg = `Timer was started ${duration}`;
-    if (tokenObj.checking) {
-        msg += "\n";
-        msg += "Continuous checking is active";
-        reply_markup = Markup.inlineKeyboard([
-            Markup.button.callback("Stop", "stop_checking"),
-        ]);
-    } else {
-        reply_markup = Markup.inlineKeyboard([
-            Markup.button.callback("Start checking regularly", "start_checking"),
-        ]);
-    }
-    ctx.reply(msg, reply_markup);
+    const msg = buildTimerMessage(tokenObj);
+    await ctx.sendMessage(msg, tokenObj.checking ? stopCheckingReplyMarkup : startCheckingReplyMarkup);
 }
 
 async function commandStartHandler(ctx) {
     if (hasToken(ctx)) {
         const tokenObj = ctx.session.tokens[0];
-        ctx.reply(
+        await ctx.sendMessage(
             `I have a token stored for "${tokenObj.username}".\n` +
             `But you can send me another one to replace it.\n` +
             `/check — to perform a timer check`,
         );
         return;
     }
-    ctx.reply(
+    await ctx.sendMessage(
         "Send me a token.\n" +
         "You can find it here: https://track.toggl.com/profile#api-token",
     );
@@ -181,29 +196,29 @@ async function commandStartHandler(ctx) {
 async function commandStopHandler(ctx) {
     const tokenObj = ctx.session.tokens[0];
     if (!tokenObj.checking) {
-        ctx.reply("Continuous checking is not active!");
+        await ctx.sendMessage("Continuous checking is not active!");
         return;
     }
     delete tokenObj.checking;
-    ctx.reply("Continuous checking was stopped");
+    await ctx.sendMessage("Continuous checking was stopped");
 }
 
 async function commandEditHandler(ctx) {
-    ctx.reply("Simply send me a new token, I will replace the old one with it");
+    await ctx.sendMessage("Simply send me a new token, I will replace the old one with it");
 }
 
 async function commandDeleteHandler(ctx) {
     ctx.session.tokens = [];
-    ctx.reply("Token was deleted");
+    await ctx.sendMessage("Token was deleted");
 }
 
 async function commandSettingsHandler(ctx) {
-    if (ctx.update.from.username !== settings.adminUsername) {
-        ctx.reply("You are not admin!");
+    if (ctx.update.message.from.username !== settings.adminUsername) {
+        await ctx.sendMessage("You are not admin!");
         return;
     }
     await ctx.telegram.setMyCommands(COMMANDS);
-    ctx.reply("Ok");
+    await ctx.sendMessage("Ok");
 }
 
 async function commandHelpHandler(ctx) {
@@ -211,7 +226,7 @@ async function commandHelpHandler(ctx) {
         (accumulator, item) => `${accumulator}${item.command} - ${item.description}\n`,
         "Here are commands I understand:\n",
     );
-    ctx.reply(text);
+    await ctx.sendMessage(text);
 }
 
 async function hearsTokenHandler(ctx) {
@@ -219,16 +234,17 @@ async function hearsTokenHandler(ctx) {
     const token = ctx.message.text;
     if (hasToken(ctx)) {
         if (token === ctx.session.tokens[0].token) {
-            ctx.reply("The same token is already stored", {
+            await ctx.sendMessage("The same token is already stored", {
                 reply_to_message_id: ctx.message.message_id,
             });
             return;
         }
     }
+    // noinspection ES6MissingAwait
     ctx.telegram.sendChatAction(ctx.chat.id, "typing");
     const togglUser = await TogglTrackAPI.me(token);
     if (!togglUser) {
-        ctx.reply(
+        await ctx.sendMessage(
             "Seems like incorrect token...",
             {reply_to_message_id: ctx.message.message_id},
         );
@@ -240,67 +256,63 @@ async function hearsTokenHandler(ctx) {
         username: togglUser.fullname,
     };
     ctx.session.tokens = [tokenObj];
-    const reply_markup = Markup.inlineKeyboard([
+    const checkNowReplyMarkup = Markup.inlineKeyboard([
         Markup.button.callback("Check timer now", "check"),
     ]);
-    ctx.reply(`Valid token for "${tokenObj.username}" is saved`, reply_markup);
+    await ctx.sendMessage(`Valid token for "${tokenObj.username}" is saved`, checkNowReplyMarkup);
 }
 
 async function actionCheckHandler(ctx) {
-    ctx.editMessageReplyMarkup();
     ctx.answerCbQuery("Checking...");
-    commandCheckHandler(ctx);
+    await ctx.editMessageReplyMarkup();
+    await commandCheckHandler(ctx);
 }
 
 async function actionStartCheckingHandler(ctx) {
     const message = ctx.update.callback_query.message;
     const chatId = message.chat.id;
     const messageId = message.message_id;
-    ctx.editMessageReplyMarkup();
     const tokenObj = ctx.session.tokens[0];
     if (tokenObj.checking) {
-        ctx.answerCbQuery(
-            "Continue checking is active!\n" +
-            "I will inform when the timer stops",
-            {show_alert: true},
-        );
+        await ctx.editMessageReplyMarkup(stopCheckingReplyMarkup.reply_markup);
+        await ctx.answerCbQuery("Continue checking is active!\n" + "I will inform when the timer stops");
         return;
     }
-    const token = tokenObj.token;
-    const currentTimer = await TogglTrackAPI.currentTimer(token);
+    const currentTimer = await TogglTrackAPI.currentTimer(tokenObj.token);
     if (!currentTimer) {
-        ctx.editMessageText(
-            "Timer is already stopped",
-            {message_id: messageId},
-        );
+        await ctx.editMessageText("Timer is already stopped", checkAgainReplyMarkup);
         return;
     }
     tokenObj.checking = true;
-    const duration = humanDuration(settings.checkInterval);
-    ctx.answerCbQuery(`I will check every ${duration} and inform when the timer stops`);
+    tokenObj.lastDuration = currentTimer.duration;
+    let msg = buildTimerMessage(tokenObj);
+    await ctx.editMessageText(msg, stopCheckingReplyMarkup);
+    const interval = humanDuration(settings.checkInterval);
+    await ctx.answerCbQuery(`I will check every ${interval} and inform when the timer stops`);
     checkTimerStatusSetTimeout(ctx.sessionId, tokenObj.token);
 }
 
 async function actionStopCheckingHandler(ctx) {
-    ctx.editMessageReplyMarkup();
     const tokenObj = ctx.session.tokens[0];
     if (!tokenObj.checking) {
-        ctx.answerCbQuery(
-            "Continuous checking is not active!",
-            {show_alert: true},
-        );
+        await ctx.editMessageText("Continuous checking is not active!", checkAgainReplyMarkup);
         return;
     }
     delete tokenObj.checking;
-    ctx.answerCbQuery("Continuous checking was stopped");
+    await ctx.editMessageText("Continuous checking was stopped", checkAgainReplyMarkup);
+}
+
+async function actionUnknownHandler(ctx) {
+    await ctx.editMessageReplyMarkup();
+    await ctx.answerCbQuery("Unknown action");
 }
 
 async function onUnknownHandler(ctx) {
-    ctx.reply("Unknown command, use /help");
+    await ctx.sendMessage("Unknown command, use /help");
 }
 
 async function onEditedMessageHandler(ctx) {
-    ctx.reply("Editing messages is not supported");
+    await ctx.sendMessage("Editing messages is not supported");
 }
 
 async function catchErrorHandler(err, ctx) {
@@ -313,7 +325,7 @@ async function catchErrorHandler(err, ctx) {
         if (ctx.update.callback_query) {
             await ctx.answerCbQuery(msg, {show_alert: true});
         } else {
-            await ctx.reply(msg);
+            await ctx.sendMessage(msg);
         }
     } catch (e) {
         console.error("Telegram error", e);
@@ -321,7 +333,7 @@ async function catchErrorHandler(err, ctx) {
     if (settings.debug) {
         throw err;
     }
-    console.trace("bot.catch", err);
+    console.error("bot.catch", err);
 }
 
 const COMMANDS = [
@@ -350,7 +362,7 @@ const COMMANDS = [
 const bot = new Telegraf(settings.botToken);
 
 bot.use(localSession.middleware());
-bot.use(myMiddleware);
+bot.use(setup);
 
 bot.command("start", commandStartHandler);
 bot.command("edit", commandEditHandler);
@@ -365,20 +377,26 @@ bot.hears(/^[0-9a-f]{32}$/, hearsTokenHandler);
 bot.action("check", checkHasToken, actionCheckHandler);
 bot.action("start_checking", checkHasToken, actionStartCheckingHandler);
 bot.action("stop_checking", checkHasToken, actionStopCheckingHandler);
+bot.action(/.*/, actionUnknownHandler);
 
 bot.on(message(), onUnknownHandler);
 bot.on(editedMessage(), onEditedMessageHandler);
 
 bot.catch(catchErrorHandler);
 
+// noinspection JSIgnoredPromiseFromCall
 bot.launch({
     allowedUpdates: ["message", "edited_message", "callback_query"],
 });
 
 // Enable graceful stop
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
-process.once("SIGQUIT", () => bot.stop("SIGQUIT"));
-if (!settings.debug) {
-    process.on("uncaughtException", (err) => console.trace("uncaughtException", err));
+function gracefullyStop(signal) {
+    return function () {
+        timeouts.forEach(clearTimeout);
+        bot.stop(signal);
+    };
+}
+
+for (const signal of ["SIGINT", "SIGQUIT", "SIGTERM"]) {
+    process.once(signal, gracefullyStop(signal));
 }
