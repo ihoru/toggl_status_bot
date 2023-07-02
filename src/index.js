@@ -74,7 +74,7 @@ function humanDuration(seconds) {
     seconds -= minutes * 60;
     minutes = minutes ? `${minutes}m ` : "";
     seconds = seconds ? `${seconds}s ` : "";
-    return `${hours}${minutes}${seconds}`;
+    return `${hours}${minutes}${seconds}`.trim();
 }
 
 
